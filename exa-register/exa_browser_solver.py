@@ -22,6 +22,10 @@ _SAVE_FILE = os.path.join(_HERE, "exa_apikeys.txt")
 _SAVE_LOCK = threading.Lock()
 _ACCOUNT_PASSWORD_LABEL = "EMAIL_OTP_ONLY"
 _EXA_AUTH_URL = "https://auth.exa.ai/?callbackUrl=https%3A%2F%2Fdashboard.exa.ai%2F"
+
+
+class EmailDomainBannedError(RuntimeError):
+    pass
 _EXA_HOME_URL = "https://dashboard.exa.ai/home"
 _EXA_WARMUP_URLS = [
     "https://exa.ai/",
@@ -515,7 +519,7 @@ def register_with_browser(email, password):
                 time.sleep(1)
             if not code_selector:
                 print("❌ Exa 验证码页未出现输入框")
-                return None
+                raise EmailDomainBannedError("Exa 验证码页未出现输入框")
             print(f"[debug] code_selector={code_selector}")
             print("✅ 到达 Exa 邮箱验证码页")
             code = get_email_code(email, timeout=EMAIL_CODE_TIMEOUT, service="exa")
@@ -551,6 +555,8 @@ def register_with_browser(email, password):
             print(f"   密码: {_ACCOUNT_PASSWORD_LABEL}")
             print(f"   Key : {api_key}")
             return api_key
+    except EmailDomainBannedError:
+        raise
     except Exception as exc:
         print(f"❌ Exa 注册失败: {exc}")
         traceback.print_exc()

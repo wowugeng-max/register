@@ -6,8 +6,8 @@ import random
 import traceback
 
 from config import DEFAULT_COUNT, DEFAULT_DELAY
-from mail_provider import create_email
-from exa_browser_solver import register_with_browser
+from mail_provider import create_email, mark_banned_email
+from exa_browser_solver import register_with_browser, EmailDomainBannedError
 
 
 def register(email, password):
@@ -19,6 +19,7 @@ def main():
     success = 0
     for idx in range(1, DEFAULT_COUNT + 1):
         print(f"\n=== 开始注册 {idx}/{DEFAULT_COUNT} ===")
+        email = None
         try:
             email, password = create_email(service="exa")
             result = register(email, password)
@@ -27,6 +28,11 @@ def main():
                 print(f"✅ 注册成功: {email}")
             else:
                 print(f"❌ 注册失败: {email}")
+        except EmailDomainBannedError as exc:
+            if email:
+                mark_banned_email(email, str(exc))
+            print(f"⚠️ 检测到 ban 邮箱/域名: {exc}")
+            continue
         except Exception as exc:
             print(f"⚠️ 本轮异常: {exc}")
             traceback.print_exc()

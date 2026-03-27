@@ -12,6 +12,7 @@ import re
 import string
 import time
 import urllib.parse
+from pathlib import Path
 
 import requests as std_requests
 
@@ -36,6 +37,8 @@ _DUCKMAIL_DOMAIN_CACHE = None
 _DUCKMAIL_MAILBOX_CACHE = {}
 _SELECTED_DOMAIN = ""
 _GPTMAIL_BASE = "https://mail.chatgpt.org.uk"
+_HERE = Path(__file__).resolve().parent
+_BANNED_DOMAINS_FILE = _HERE / "banned_email_domains.txt"
 _GPTMAIL_CLIENTS = {}  # email -> client
 _TEMPMAIL_BASE = "https://api.tempmail.lol"
 _TEMPMAIL_INBOXES = {}  # email -> client
@@ -145,6 +148,65 @@ def _get_tempmail_client(email=None):
     return TempMailClient()
 
 
+def _load_banned_items(path):
+    if not path.exists():
+        return set()
+    try:
+        return {line.strip().lower() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    except Exception:
+        return set()
+
+
+def _append_banned_item(path, value):
+    value = (value or "").strip().lower()
+    if not value:
+        return
+    existing = _load_banned_items(path)
+    if value in existing:
+        return
+    with path.open("a", encoding="utf-8") as f:
+        f.write(value + "\n")
+
+
+def _root_domain(domain):
+    domain = (domain or "").strip().lower().strip(".")
+    if not domain:
+        return ""
+    parts = [p for p in domain.split(".") if p]
+    if len(parts) <= 2:
+        return domain
+    return ".".join(parts[-2:])
+
+
+def get_banned_domains():
+    return _load_banned_items(_BANNED_DOMAINS_FILE)
+
+
+def is_banned_email(email):
+    email = (email or "").strip().lower()
+    if not email or "@" not in email:
+        return False
+    domain = email.split("@", 1)[1]
+    root_domain = _root_domain(domain)
+    banned = get_banned_domains()
+    return domain in banned or root_domain in banned
+
+
+def mark_banned_email(email, reason=""):
+    email = (email or "").strip().lower()
+    if not email or "@" not in email:
+        return
+    domain = email.split("@", 1)[1]
+    root_domain = _root_domain(domain)
+    if not root_domain:
+        return
+    _append_banned_item(_BANNED_DOMAINS_FILE, root_domain)
+    if reason:
+        print(f"[mail] 已加入 ban 主域名列表: {root_domain}（原域名 {domain}），原因: {reason}")
+    else:
+        print(f"[mail] 已加入 ban 主域名列表: {root_domain}（原域名 {domain}）")
+
+
 def rand_str(n=8):
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
@@ -188,44 +250,52 @@ def _username_prefix(service):
     return "exa"
 
 
-def create_email(service="exa"):
-    """按当前 provider 生成邮箱与强密码。"""
-    password = f"Tv{rand_str(6)}{random.randint(100, 999)}!A"
+def create_email(service="exa", max_attempts=20):
+    """按当前 provider 生成邮箱与强密码，自动跳过 ban 主域名。"""
     prefix = _username_prefix(service)
-    actual_provider = EMAIL_PROVIDER
 
-    if EMAIL_PROVIDER == "duckmail":
-        email = _create_duckmail_mailbox(password, prefix)
-    elif EMAIL_PROVIDER == "gptmail":
-        client = GPTMailClient()
-        email, token = client.generate_email()
-        _GPTMAIL_CLIENTS[email] = client
-        client.set_token(token)
-    elif EMAIL_PROVIDER == "tempmail":
-        client = TempMailClient()
-        email, token = client.generate_email()
-        _TEMPMAIL_INBOXES[email] = client
-        client.set_token(token)
-    elif EMAIL_PROVIDER == "auto":
-        try:
-            client = TempMailClient()
-            email, token = client.generate_email()
-            _TEMPMAIL_INBOXES[email] = client
-            client.set_token(token)
-            actual_provider = "tempmail"
-        except Exception as exc:
-            print(f"⚠️ TempMail 初始化失败，回退 GPTMail: {exc}")
+    for _ in range(max_attempts):
+        password = f"Tv{rand_str(6)}{random.randint(100, 999)}!A"
+        actual_provider = EMAIL_PROVIDER
+
+        if EMAIL_PROVIDER == "duckmail":
+            email = _create_duckmail_mailbox(password, prefix)
+        elif EMAIL_PROVIDER == "gptmail":
             client = GPTMailClient()
             email, token = client.generate_email()
             _GPTMAIL_CLIENTS[email] = client
             client.set_token(token)
-            actual_provider = "gptmail"
-    else:
-        username = f"{prefix}-{rand_str()}"
-        email = f"{username}@{get_active_domain()}"
+        elif EMAIL_PROVIDER == "tempmail":
+            client = TempMailClient()
+            email, token = client.generate_email()
+            _TEMPMAIL_INBOXES[email] = client
+            client.set_token(token)
+        elif EMAIL_PROVIDER == "auto":
+            try:
+                client = TempMailClient()
+                email, token = client.generate_email()
+                _TEMPMAIL_INBOXES[email] = client
+                client.set_token(token)
+                actual_provider = "tempmail"
+            except Exception as exc:
+                print(f"⚠️ TempMail 初始化失败，回退 GPTMail: {exc}")
+                client = GPTMailClient()
+                email, token = client.generate_email()
+                _GPTMAIL_CLIENTS[email] = client
+                client.set_token(token)
+                actual_provider = "gptmail"
+        else:
+            username = f"{prefix}-{rand_str()}"
+            email = f"{username}@{get_active_domain()}"
 
-    print(f"✅ 邮箱({actual_provider}): {email}")
-    return email, password
+        if is_banned_email(email):
+            print(f"[mail] 跳过 ban 主域名邮箱: {email}")
+            continue
+
+        print(f"✅ 邮箱({actual_provider}): {email}")
+        return email, password
+
+    raise RuntimeError("邮箱生成失败：连续命中 ban 主域名次数过多")
 
 
 def get_verification_link(email, timeout=120):
