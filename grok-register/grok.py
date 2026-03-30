@@ -1,4 +1,4 @@
-import os, json, random, string, time, re, struct
+import os, json, random, string, time, re, struct, argparse
 import threading
 import concurrent.futures
 from urllib.parse import urljoin, urlparse
@@ -30,6 +30,7 @@ post_lock = threading.Lock()
 file_lock = threading.Lock()
 success_count = 0
 start_time = time.time()
+EMAIL_PROVIDER = str(os.getenv("EMAIL_PROVIDER") or "gptmail").strip().lower()
 
 def generate_random_name() -> str:
     length = random.randint(4, 6)
@@ -77,12 +78,12 @@ def verify_email_code_grpc(session, email, code):
         print(f"[-] {email} 验证验证码异常: {e}")
         return False
 
-def register_single_thread():
+def register_single_thread(email_provider: str = "gptmail"):
     # 错峰启动，防止瞬时并发过高
     time.sleep(random.uniform(0, 5))
     
     try:
-        email_service = EmailService(proxies=PROXIES)
+        email_service = EmailService(proxies=PROXIES, provider=email_provider)
         turnstile_service = TurnstileService()
     except Exception as e:
         print(f"[-] 服务初始化失败: {e}")
@@ -200,7 +201,13 @@ def register_single_thread():
             time.sleep(5)
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--email-provider", choices=["gptmail", "luckmail"], default=os.getenv("EMAIL_PROVIDER", "gptmail"), help="邮箱提供商：gptmail/luckmail")
+    parser.add_argument("--threads", type=int, default=None, help="并发线程数")
+    args = parser.parse_args()
+
     print("=" * 60 + "\nGrok 注册机\n" + "=" * 60)
+    print(f"[*] 当前邮箱提供商: {args.email_provider}")
     
     # 1. 扫描参数
     print("[*] 正在初始化...")
@@ -241,14 +248,18 @@ def main():
         return
 
     # 2. 启动
-    try:
-        t = int(input("\n并发数 (默认8): ").strip() or 8)
-    except: t = 8
+    if args.threads is not None:
+        t = args.threads
+    else:
+        try:
+            t = int(input("\n并发数 (默认8): ").strip() or 8)
+        except:
+            t = 8
     
     print(f"[*] 启动 {t} 个线程...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=t) as executor:
         # 只提交与线程数相等的任务，让它们在内部无限循环
-        futures = [executor.submit(register_single_thread) for _ in range(t)]
+        futures = [executor.submit(register_single_thread, args.email_provider) for _ in range(t)]
         try:
             concurrent.futures.wait(futures)
         except KeyboardInterrupt:
